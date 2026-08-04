@@ -14,6 +14,7 @@ ones when adding new ones.
 | [0005](0005-dashboards.md) | Sales trend dashboards |
 | [0006](0006-backend-folder-layout.md) | Backend folder layout (app/scripts/tests split) |
 | [0007](0007-backfill-milk-sold-pattern.md) | Backfill Milk's sold-quantity pattern (dashboard-only) |
+| [0008](0008-item-name-aliasing.md) | Item name aliasing and backfill-only exclusions |
 
 See also [`../future-ideas.md`](../future-ideas.md) — things discussed and
 deliberately deferred (weather features, hour-of-day data, labor/scheduling),

@@ -126,10 +126,21 @@ Milk's Dashboard view (a sold-quantity pattern by weekday/month/season, plus
 a model-accuracy check), same as it does for par-mode categories. See
 `docs/decisions/0007-backfill-milk-sold-pattern.md`.
 
-Products that get rung up under a tracked Class by mistake (e.g. a grocery
-item sharing a department with milk) can be excluded by adding them to
-`EXCLUDED_ITEMS` in both `index.html` and `backend/scripts/backfill_import.py`
-— a small hardcoded list, matched case-insensitively, kept in sync by hand.
+Three small hardcoded lists handle real-world data messiness that can't be
+inferred automatically (all matched case-insensitively, all in
+`backend/scripts/backfill_import.py`, kept in sync by hand — see
+`docs/decisions/0008-item-name-aliasing.md`):
+- `EXCLUDED_ITEMS` (also in `index.html`) — products rung up under a tracked
+  Class by mistake (e.g. a grocery item sharing a department with milk),
+  filtered out everywhere.
+- `ITEM_ALIASES` (also in `index.html`) — the same real product sold under
+  different vendor/brand names over time (e.g. a distributor switch),
+  merged into one canonical item so pattern learning sees one continuous
+  series instead of two fragments.
+- `BACKFILL_SKIP_ITEMS` (backfill-only, not in `index.html`) — items whose
+  *historical* export data is known broken (a POS reporting gap, not real
+  zero sales), skipped for backfill only; regular going-forward uploads are
+  unaffected.
 
 This creates one real saved entry per day (not one blended average), which
 is exactly what `backend/app/ml_forecasting.py` trains on — the more you
