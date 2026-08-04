@@ -86,6 +86,48 @@ errors in the console. If you get "Could not reach server," double check:
 - The Railway service is actually running (check its logs)
 - If you set `ALLOWED_ORIGINS`, it matches your GitHub Pages URL exactly
 
+## 5. Backfilling historical sales (optional, for a real "smarter" baseline)
+
+Once your backend is deployed, if you have a large Product Mix export
+(e.g. a full year, in the same wide-day-column format as your regular
+weekly exports), you can seed real day-by-day history instead of starting
+from zero:
+
+```
+cd backend
+pip install requests
+python backfill_import.py path/to/year_export.csv --api https://your-backend-url --category Sandwiches --dry-run
+```
+
+Check the dry-run output looks right, then drop `--dry-run` to actually
+import. This creates one real saved entry per day (not one blended
+average), which is what lets the "Suggest order" math use real
+day-of-week patterns (see below) instead of a flat average.
+
+**Important:** this only makes sense for **par-mode categories** (Sandwiches).
+Milk's reconciliation math needs a real physical count for each week, which
+can't be reconstructed retroactively — don't run this against Milk.
+
+If you add, rename, or remove sandwich items in `frontend/index.html`
+later, update the matching `ITEM_TYPES` list in `backend/backfill_import.py`
+too — they're intentionally kept in sync but aren't automatically shared.
+
+## How the "Suggest order" math works (par mode)
+
+- Each saved entry stores that day's actual sold count (`avgDailySold`,
+  computed as sold ÷ days-in-file — usually 1 for a single day).
+- When you're entering today's count, the tool looks at your saved history
+  for **the same day of the week** (e.g. all past Saturdays) and averages
+  the most recent ~8 of those, so a Saturday's suggestion is based on past
+  Saturdays, not diluted by weekday data.
+- If there isn't enough same-weekday history yet (fewer than 3 saved
+  entries for that weekday), it falls back to a flat average across
+  whatever's been saved recently.
+- This is still simple math, not machine learning — no weather, no trend
+  detection, no promo awareness. It's a reasonable baseline that gets
+  better with more real data, not a forecasting model.
+
+
 ## Notes
 
 - **Item types** (which milk types, which sandwiches) are hardcoded in
@@ -93,8 +135,13 @@ errors in the console. If you get "Could not reach server," double check:
   Use "+ Add item type" in the tool to add more on the fly — those
   additions save to the browser you're using (not synced), so for
   something permanent, add it to `DEFAULT_CONFIG` in the code instead.
-- **Weekly history** (ordered/sold/count/suggestions) is the thing that
-  syncs between you and Aiden, via the backend.
+- **Item matching uses exact-ish full product names on purpose.** Early
+  testing caught a real bug where a short generic keyword (like "bacon
+  breakfast wrap") silently matched a longer, different product ("Jalapeno
+  Bacon Breakfast Wrap") and misattributed its sales. If you add new items,
+  prefer full, distinguishing names as keywords rather than short fragments.
+- **Weekly/daily history** (ordered/sold/count/suggestions) is the thing
+  that syncs between you and Aiden, via the backend.
 - This repo has no authentication on the API — anyone with the backend URL
   could technically post fake data. Fine for internal café use; if that
   becomes a concern later, a simple shared API key header is a quick add.

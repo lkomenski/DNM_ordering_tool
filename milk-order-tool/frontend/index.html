@@ -256,29 +256,29 @@ const DEFAULT_CONFIG = {
   },
   types: {
     "Milk": [
-      { label: "Whole Milk (Gallon)", vendor: "Smith Brothers Farms", keywords: "whole milk, gallon" },
+      { label: "Whole Milk (Gallon)", vendor: "Smith Brothers Farms", keywords: "whole milk - gallon" },
       { label: "2% Milk", vendor: "Smith Brothers Farms", keywords: "2%" },
       { label: "Heavy Cream", vendor: "Smith Brothers Farms", keywords: "heavy whipping, heavy cream" },
       { label: "Nonfat Milk", vendor: "Smith Brothers Farms", keywords: "fat free, nonfat" }
     ],
     "Sandwiches": [
       { label: "Bacon Breakfast Wrap", vendor: "Memoranda", keywords: "bacon breakfast wrap" },
-      { label: "Belgian Waffle Sandwich", vendor: "Memoranda", keywords: "belgian waffle" },
-      { label: "Black Bean Chipotle Wrap", vendor: "Memoranda", keywords: "black bean chipotle" },
+      { label: "Belgian Waffle Sandwich", vendor: "Memoranda", keywords: "belgian waffle sandwich" },
+      { label: "Black Bean Chipotle Wrap", vendor: "Memoranda", keywords: "black bean chipotle wrap" },
       { label: "Brisket Melt", vendor: "Memoranda", keywords: "brisket melt" },
-      { label: "Brown Sugar Bacon Melt", vendor: "Memoranda", keywords: "brown sugar bacon" },
+      { label: "Brown Sugar Bacon Melt", vendor: "Memoranda", keywords: "brown sugar bacon melt" },
       { label: "Chipotle Chicken Bacon", vendor: "Memoranda", keywords: "chipotle chicken bacon" },
-      { label: "GF Bacon Breakfast Sandwich", vendor: "Memoranda", keywords: "gf bacon breakfast" },
-      { label: "GF Turkey & Havarti", vendor: "Memoranda", keywords: "turkey & havarti, turkey and havarti" },
-      { label: "Ham & Swiss Croissant", vendor: "Memoranda", keywords: "ham & swiss, ham and swiss" },
-      { label: "Jalapeno Bacon Breakfast Wrap", vendor: "Memoranda", keywords: "jalapeno bacon" },
+      { label: "GF Bacon Breakfast Sandwich", vendor: "Memoranda", keywords: "gf bacon breakfast sandwich" },
+      { label: "GF Turkey & Havarti", vendor: "Memoranda", keywords: "gf turkey & havarti, gf turkey and havarti" },
+      { label: "Ham & Swiss Croissant", vendor: "Memoranda", keywords: "ham & swiss croissant, ham and swiss croissant" },
+      { label: "Jalapeno Bacon Breakfast Wrap", vendor: "Memoranda", keywords: "jalapeno bacon breakfast wrap" },
       { label: "Roast Turkey Pesto", vendor: "Memoranda", keywords: "roast turkey pesto" },
       { label: "Smoked Ham and Brie", vendor: "Memoranda", keywords: "smoked ham and brie" },
-      { label: "Smoky Vegan Sausage Breakfast", vendor: "Memoranda", keywords: "smoky vegan sausage" },
-      { label: "Turkey Gouda Sandwich", vendor: "Memoranda", keywords: "turkey gouda" },
-      { label: "Vegan GF Viet Style Slaw", vendor: "Memoranda", keywords: "viet style slaw" },
-      { label: "Vegan New Mexico Breakfast Wrap", vendor: "Memoranda", keywords: "new mexico breakfast" },
-      { label: "Vegan Smoky Breakfast Sandwich", vendor: "Memoranda", keywords: "vegan smoky breakfast" }
+      { label: "Smoky Vegan Sausage Breakfast", vendor: "Memoranda", keywords: "smoky vegan sausage breakfast" },
+      { label: "Turkey Gouda Sandwich", vendor: "Memoranda", keywords: "turkey gouda sandwich" },
+      { label: "Vegan GF Viet Style Slaw", vendor: "Memoranda", keywords: "vegan gf viet style slaw" },
+      { label: "Vegan New Mexico Breakfast Wrap", vendor: "Memoranda", keywords: "vegan new mexico breakfast wrap" },
+      { label: "Vegan Smoky Breakfast Sandwich", vendor: "Memoranda", keywords: "vegan smoky breakfast sandwich" }
     ]
   }
 };
@@ -451,11 +451,18 @@ document.getElementById('addTypeBtn').addEventListener('click', async () => {
 function matchType(itemName) {
   const n = (itemName || '').toLowerCase();
   const types = config.types[currentCategory] || [];
+  let bestLabel = null;
+  let bestLen = 0;
   for (const t of types) {
     const keywords = (t.keywords || '').split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
-    if (keywords.some(k => n.includes(k))) return t.label;
+    for (const k of keywords) {
+      if (k && n.includes(k) && k.length > bestLen) {
+        bestLabel = t.label;
+        bestLen = k.length;
+      }
+    }
   }
-  return null;
+  return bestLabel;
 }
 
 function parseProductMix(rows) {
@@ -574,10 +581,33 @@ function avgWeeklyTotalUse(type) {
   return sum / recent.length;
 }
 
-function avgDailySoldFromHistory(type) {
-  const past = (history[currentCategory] || []).filter(w => w.entries[type] && typeof w.entries[type].avgDailySold === 'number');
+function dayOfWeekFromDateStr(str) {
+  // Parse YYYY-MM-DD manually to avoid UTC/local timezone shift bugs
+  const parts = (str || '').split('-').map(Number);
+  if (parts.length !== 3 || parts.some(isNaN)) return null;
+  return new Date(parts[0], parts[1] - 1, parts[2]).getDay(); // 0=Sun..6=Sat
+}
+
+// Day-of-week-aware average: Saturday's suggestion is based on past Saturdays,
+// not lumped in with Tuesdays. Falls back to a flat recent average until there's
+// enough same-weekday history (useful early on, or for lightly-backfilled items).
+function avgDailySoldFromHistory(type, targetDateStr) {
+  const past = (history[currentCategory] || [])
+    .filter(w => w.entries[type] && typeof w.entries[type].avgDailySold === 'number' && w.weekEnding);
   if (past.length === 0) return null;
-  const recent = past.slice(-10);
+
+  const targetDow = targetDateStr ? dayOfWeekFromDateStr(targetDateStr) : null;
+  if (targetDow !== null) {
+    const sameDow = past.filter(w => dayOfWeekFromDateStr(w.weekEnding) === targetDow);
+    if (sameDow.length >= 3) {
+      const recent = sameDow.slice(-8); // last 8 same-weekday entries
+      const sum = recent.reduce((s, w) => s + w.entries[type].avgDailySold, 0);
+      return sum / recent.length;
+    }
+  }
+
+  // Not enough same-weekday data yet — flat recent average across whatever exists
+  const recent = past.slice(-14);
   const sum = recent.reduce((s, w) => s + w.entries[type].avgDailySold, 0);
   return sum / recent.length;
 }
@@ -642,6 +672,7 @@ function renderTable() {
 }
 
 leadTimeInput.addEventListener('input', recomputeAll);
+weekEndingInput.addEventListener('change', recomputeAll);
 
 function recomputeAll() {
   const mode = currentMode();
@@ -654,7 +685,7 @@ function recomputeAll() {
       const onHand = parseFloat(tr.querySelector('[data-role="onHand"]').value) || 0;
 
       const fileRate = lastUploadDaysInFile > 0 ? sold / lastUploadDaysInFile : 0;
-      const histRate = avgDailySoldFromHistory(type);
+      const histRate = avgDailySoldFromHistory(type, weekEndingInput.value);
       // blend: prefer saved history once it exists, but factor in the latest upload too
       const avgDaily = histRate !== null ? (histRate * 0.7 + fileRate * 0.3) : fileRate;
 
@@ -778,7 +809,7 @@ function renderHistory() {
       Object.entries(week.entries).forEach(([type, e]) => {
         html += `<tr>
           <td>${week.weekEnding}</td><td>${type}</td><td>${e.vendor || '—'}</td>
-          <td>${e.onHand}</td><td>${e.soldInFile}</td><td>${e.damaged || 0}</td><td>${(e.avgDailySold || 0).toFixed(1)}</td>
+          <td>${(e.onHand === null || e.onHand === undefined) ? '—' : e.onHand}</td><td>${e.soldInFile}</td><td>${e.damaged || 0}</td><td>${(e.avgDailySold || 0).toFixed(1)}</td>
         </tr>`;
       });
     });
