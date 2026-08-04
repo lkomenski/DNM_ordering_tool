@@ -5,6 +5,7 @@
 <title>Order Reconciliation Tool — Delightful Market</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
 <style>
   :root {
     --bottle-blue: #2f4a5c;
@@ -63,18 +64,6 @@
     border-color: var(--bottle-blue);
     color: white;
   }
-  .cat-add {
-    font-family: var(--mono);
-    font-size: 12.5px;
-    padding: 7px 12px;
-    border-radius: 999px;
-    border: 1px dashed var(--line);
-    background: transparent;
-    color: var(--muted);
-    cursor: pointer;
-  }
-  .cat-add:hover { color: var(--ink); border-color: var(--ink); }
-
   .card {
     background: var(--paper);
     border: 1px solid var(--line);
@@ -135,23 +124,10 @@
 
   .note { font-size: 12.5px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
   .note b { color: var(--ink); }
+  .reason { font-size: 11px; color: var(--muted); font-weight: normal; margin-top: 2px; line-height: 1.3; }
 
   .history-table th, .history-table td { font-size: 12.5px; padding: 7px 8px; }
   .empty-state { color: var(--muted); font-size: 13px; font-style: italic; padding: 8px 0; }
-
-  .types-manager { margin-top: 8px; }
-  .type-row { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
-  .type-row input[type="text"] {
-    font-family: var(--sans); font-size: 13px; padding: 7px 9px;
-    border: 1px solid var(--line); border-radius: 6px; background: var(--cream);
-  }
-  .type-row input.label-input { width: 160px; }
-  .type-row input.vendor-input { width: 120px; }
-  .type-row input.keywords-input { flex: 1; }
-  .type-row .remove-type {
-    font-size: 12px; color: var(--warn); background: none; border: none; cursor: pointer;
-    font-family: var(--mono);
-  }
 
   .toast {
     position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
@@ -171,18 +147,13 @@
   </header>
 
   <div class="category-bar" id="categoryBar"></div>
+  <div class="category-bar" id="viewToggle" style="margin: 0 0 22px;"></div>
+
+  <div id="orderFormView">
 
   <div class="card">
     <h2>Ordering approach for this category</h2>
     <p class="hint" id="modeHint"></p>
-    <div class="category-bar" id="modeToggle" style="margin: 4px 0 0;"></div>
-  </div>
-
-  <div class="card">
-    <h2>Item types for this category</h2>
-    <p class="hint">Define the items you're tracking and the keyword(s) used to match them in the Product Mix CSV (matches if the product name contains any keyword, case-insensitive).</p>
-    <div class="types-manager" id="typesManager"></div>
-    <button class="btn btn-ghost" id="addTypeBtn">+ Add item type</button>
   </div>
 
   <div class="card">
@@ -228,12 +199,29 @@
     </div>
 
     <p class="note" id="noteText"></p>
+    <p class="note" id="modelAccuracyText"></p>
   </div>
 
   <div class="card">
     <h2>History</h2>
     <p class="hint">Saved entries appear here, per category, synced from the server — anyone opening this page sees the same saved history, regardless of device.</p>
     <div id="historyContainer"><p class="empty-state">No entries saved yet.</p></div>
+  </div>
+
+  </div>
+
+  <div id="dashboardView" style="display:none;">
+    <div class="card">
+      <h2>Sales trends</h2>
+      <p class="hint" id="dashboardHint"></p>
+      <div class="field" style="margin-bottom:18px;">
+        <label for="dashboardItemSelect">Item</label>
+        <select id="dashboardItemSelect" style="font-family: var(--mono); font-size: 13px; padding: 7px 9px; border: 1px solid var(--line); border-radius: 6px; background: var(--cream); color: var(--ink); max-width: 320px;">
+          <option value="">All items combined</option>
+        </select>
+      </div>
+      <div id="dashboardCharts"></div>
+    </div>
   </div>
 
 </div>
@@ -243,57 +231,30 @@
 <script>
 // Set this to your deployed backend URL (Railway/Render), e.g.
 // "https://milk-order-tool-production.up.railway.app"
-// Leave as-is only for local testing with `uvicorn main:app --reload`.
+// Leave as-is only for local testing with `uvicorn app.main:app --reload` (run from backend/).
 const API_BASE_URL = "https://dnmorderingtool-production.up.railway.app";
 
-const CONFIG_KEY = "perishables-config"; // item types — stored locally per browser, rarely changes
+// Items, vendors, and categories are all read straight from each upload's
+// Class/Name columns — no manually maintained list. The one thing POS data
+// can't express is which category needs Beginning+Ordered-Sold-Ending
+// reconciliation math instead of plain par ordering (that's a business rule,
+// not a data fact), so that's the one hardcoded exception here. Mirrors
+// RECONCILIATION_CLASSES in backend/backfill_import.py — keep both in sync.
+// See docs/decisions/0003-auto-detect-items-and-categories.md.
+const RECONCILIATION_CLASSES = new Set(["Smith Brothers Farms"]);
 
-const DEFAULT_CONFIG = {
-  categories: ["Milk", "Sandwiches"],
-  modes: {
-    "Milk": "reconciliation",   // Beginning + Ordered - Sold - Ending = hidden usage (café-used milk)
-    "Sandwiches": "par"          // everything's logged in Revel already; just: on-hand vs. expected sales
-  },
-  types: {
-    "Milk": [
-      { label: "Whole Milk (Gallon)", vendor: "Smith Brothers Farms", keywords: "whole milk - gallon" },
-      { label: "2% Milk", vendor: "Smith Brothers Farms", keywords: "2%" },
-      { label: "Heavy Cream", vendor: "Smith Brothers Farms", keywords: "heavy whipping, heavy cream" },
-      { label: "Nonfat Milk", vendor: "Smith Brothers Farms", keywords: "fat free, nonfat" }
-    ],
-    "Sandwiches": [
-      { label: "Bacon Breakfast Wrap", vendor: "Memoranda", keywords: "bacon breakfast wrap" },
-      { label: "Belgian Waffle Sandwich", vendor: "Memoranda", keywords: "belgian waffle sandwich" },
-      { label: "Black Bean Chipotle Wrap", vendor: "Memoranda", keywords: "black bean chipotle wrap" },
-      { label: "Brisket Melt", vendor: "Memoranda", keywords: "brisket melt" },
-      { label: "Brown Sugar Bacon Melt", vendor: "Memoranda", keywords: "brown sugar bacon melt" },
-      { label: "Chipotle Chicken Bacon", vendor: "Memoranda", keywords: "chipotle chicken bacon" },
-      { label: "GF Bacon Breakfast Sandwich", vendor: "Memoranda", keywords: "gf bacon breakfast sandwich" },
-      { label: "GF Turkey & Havarti", vendor: "Memoranda", keywords: "gf turkey & havarti, gf turkey and havarti" },
-      { label: "Ham & Swiss Croissant", vendor: "Memoranda", keywords: "ham & swiss croissant, ham and swiss croissant" },
-      { label: "Jalapeno Bacon Breakfast Wrap", vendor: "Memoranda", keywords: "jalapeno bacon breakfast wrap" },
-      { label: "Roast Turkey Pesto", vendor: "Memoranda", keywords: "roast turkey pesto" },
-      { label: "Smoked Ham and Brie", vendor: "Memoranda", keywords: "smoked ham and brie" },
-      { label: "Smoky Vegan Sausage Breakfast", vendor: "Memoranda", keywords: "smoky vegan sausage breakfast" },
-      { label: "Turkey Gouda Sandwich", vendor: "Memoranda", keywords: "turkey gouda sandwich" },
-      { label: "Vegan GF Viet Style Slaw", vendor: "Memoranda", keywords: "vegan gf viet style slaw" },
-      { label: "Vegan New Mexico Breakfast Wrap", vendor: "Memoranda", keywords: "vegan new mexico breakfast wrap" },
-      { label: "Vegan Smoky Breakfast Sandwich", vendor: "Memoranda", keywords: "vegan smoky breakfast sandwich" }
-    ]
-  }
-};
-
-let config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+let knownCategories = new Set(); // populated from /api/categories + whatever's in the latest upload
 let history = {};
-let currentCategory = "Milk";
-let salesByType = {};
+let currentCategory = null;
+let salesByClass = {}; // { className: { itemName: qtyThisUpload } } — spans every category in the latest upload
 let damagedByType = {};
+let forecastCache = {}; // { itemName: { estimate, reasoning } } — from the ML /api/forecast endpoint, refreshed per category+date
+let modelAccuracy = null; // { mae, naiveMae, nHoldout, nTrain, improvementOverNaive } | null
 
 const entryBody = document.getElementById('entryBody');
 const weekEndingInput = document.getElementById('weekEnding');
 const leadTimeInput = document.getElementById('leadTime');
 const toast = document.getElementById('toast');
-const typesManager = document.getElementById('typesManager');
 const categoryBar = document.getElementById('categoryBar');
 
 function todayISO() { return new Date().toISOString().slice(0,10); }
@@ -306,75 +267,257 @@ function showToast(msg) {
 }
 
 function currentMode() {
-  return (config.modes && config.modes[currentCategory]) || 'reconciliation';
+  return currentCategory && RECONCILIATION_CLASSES.has(currentCategory) ? 'reconciliation' : 'par';
 }
 
 function renderCategoryBar() {
   categoryBar.innerHTML = '';
-  config.categories.forEach(cat => {
+  const cats = Array.from(knownCategories).sort((a, b) => a.localeCompare(b));
+  if (cats.length === 0) {
+    const hint = document.createElement('span');
+    hint.className = 'empty-state';
+    hint.textContent = 'Upload a Product Mix CSV below — categories and items are detected automatically.';
+    categoryBar.appendChild(hint);
+    return;
+  }
+  cats.forEach(cat => {
     const btn = document.createElement('button');
     btn.className = 'cat-btn' + (cat === currentCategory ? ' active' : '');
     btn.textContent = cat;
     btn.addEventListener('click', async () => { currentCategory = cat; await onCategoryChange(); });
     categoryBar.appendChild(btn);
   });
-  const addBtn = document.createElement('button');
-  addBtn.className = 'cat-add';
-  addBtn.textContent = '+ New category';
-  addBtn.addEventListener('click', async () => {
-    const name = prompt('New category name (e.g. Pastries):');
-    if (!name || !name.trim()) return;
-    const clean = name.trim();
-    if (!config.categories.includes(clean)) {
-      config.categories.push(clean);
-      config.types[clean] = [];
-      if (!config.modes) config.modes = {};
-      config.modes[clean] = 'reconciliation';
-      await saveConfig();
-    }
-    currentCategory = clean;
-    await onCategoryChange();
-  });
-  categoryBar.appendChild(addBtn);
 }
 
-function renderModeToggle() {
-  const modeToggle = document.getElementById('modeToggle');
-  const modeHint = document.getElementById('modeHint');
-  modeToggle.innerHTML = '';
-  const options = [
-    { key: 'reconciliation', label: 'Weekly reconciliation' },
-    { key: 'par', label: 'Daily par ordering' }
-  ];
-  options.forEach(opt => {
-    const btn = document.createElement('button');
-    btn.className = 'cat-btn' + (currentMode() === opt.key ? ' active' : '');
-    btn.textContent = opt.label;
-    btn.addEventListener('click', async () => {
-      if (!config.modes) config.modes = {};
-      config.modes[currentCategory] = opt.key;
-      await saveConfig();
-      onCategoryChange();
-    });
-    modeToggle.appendChild(btn);
-  });
-  modeHint.textContent = currentMode() === 'reconciliation'
-    ? 'For items where not everything that leaves inventory gets logged (e.g. milk used in drinks) — this backs out the hidden usage from Beginning + Ordered − Sold − Ending.'
-    : 'For items where everything is already logged in Revel (sold or damaged out) — this just compares current on-hand to the recent daily sell rate to suggest an order.';
+// ML forecast for the currently selected par-mode category + target date —
+// see backend/ml_forecasting.py. Refreshed whenever the category or date
+// changes; recomputeAll() just reads whatever's cached, so typing in
+// on-hand counts stays instant. Falls back to the old client-side
+// day-of-week average (avgDailySoldFromHistory) if the request fails, so
+// the tool still works offline or if the backend is down.
+async function loadForecast(category, targetDateStr) {
+  forecastCache = {};
+  modelAccuracy = null;
+  if (!category || RECONCILIATION_CLASSES.has(category) || !targetDateStr) return;
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/forecast?category=${encodeURIComponent(category)}&targetDate=${encodeURIComponent(targetDateStr)}`);
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    const data = await res.json();
+    forecastCache = data.items || {};
+    modelAccuracy = data.modelAccuracy || null;
+  } catch (e) {
+    console.error('Could not load ML forecast — falling back to client-side average:', e);
+    forecastCache = {};
+    modelAccuracy = null;
+  }
 }
+
+function renderModelAccuracyText() {
+  const el = document.getElementById('modelAccuracyText');
+  if (!modelAccuracy) { el.textContent = ''; return; }
+  const pct = modelAccuracy.improvementOverNaive !== null ? (modelAccuracy.improvementOverNaive * 100).toFixed(0) : null;
+  el.innerHTML = `<b>Model accuracy</b>: off by ${modelAccuracy.mae.toFixed(1)}/day on average on the most recent ${modelAccuracy.nHoldout} saved day(s) it hadn't seen` +
+    (pct !== null ? ` — ${pct}% better than a flat average` : '') +
+    `, trained on ${modelAccuracy.nTrain} day(s).`;
+}
+
+function renderModeHint() {
+  const modeHint = document.getElementById('modeHint');
+  modeHint.textContent = currentMode() === 'reconciliation'
+    ? `${currentCategory} uses weekly reconciliation automatically — Beginning + Ordered − Sold − Ending backs out the hidden usage (e.g. café-used milk) Revel can't see.`
+    : `${currentCategory} uses par ordering automatically — everything here is already logged in Revel, so this just compares current on-hand to the expected sell rate.`;
+}
+
+// ---- Dashboard: mode-aware sales trend charts, backed by GET /api/dashboard ----
+
+let currentView = 'form'; // 'form' | 'dashboard'
+let dashboardChartInstances = {};
+
+const CHART_COLOR = '#2f4a5c';
+const CHART_GRID = '#dcd6c8';
+const CHART_MUTED = '#746f63';
+const CHART_FONT = "'IBM Plex Mono','SFMono-Regular',Consolas,monospace";
+const WEEKDAY_ORDER = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
+const MONTH_ORDER = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+const SEASON_ORDER = ['Winter', 'Spring', 'Summer', 'Fall'];
+
+function renderViewToggle() {
+  const viewToggle = document.getElementById('viewToggle');
+  viewToggle.innerHTML = '';
+  [{ key: 'form', label: 'Order form' }, { key: 'dashboard', label: 'Dashboard' }].forEach(opt => {
+    const btn = document.createElement('button');
+    btn.className = 'cat-btn' + (currentView === opt.key ? ' active' : '');
+    btn.textContent = opt.label;
+    btn.addEventListener('click', async () => { currentView = opt.key; await applyView(); });
+    viewToggle.appendChild(btn);
+  });
+}
+
+function populateDashboardItemSelect() {
+  const select = document.getElementById('dashboardItemSelect');
+  const items = currentCategory ? getKnownItemsForCategory(currentCategory) : [];
+  const prevValue = select.value;
+  select.innerHTML = '<option value="">All items combined</option>' + items.map(i => `<option value="${i}">${i}</option>`).join('');
+  select.value = items.includes(prevValue) ? prevValue : '';
+}
+
+async function applyView() {
+  renderViewToggle();
+  document.getElementById('orderFormView').style.display = currentView === 'form' ? '' : 'none';
+  document.getElementById('dashboardView').style.display = currentView === 'dashboard' ? '' : 'none';
+  if (currentView === 'dashboard') {
+    populateDashboardItemSelect();
+    await loadAndRenderDashboard();
+  }
+}
+
+function destroyDashboardCharts() {
+  Object.values(dashboardChartInstances).forEach(c => c && c.destroy());
+  dashboardChartInstances = {};
+}
+
+function makeChartBlock(id, title) {
+  const wrap = document.createElement('div');
+  wrap.style.marginBottom = '30px';
+  const label = document.createElement('p');
+  label.className = 'hint';
+  label.style.cssText = 'margin:0 0 8px; font-weight:600; color:var(--ink);';
+  label.textContent = title;
+  const canvas = document.createElement('canvas');
+  canvas.id = id;
+  canvas.height = 90;
+  wrap.appendChild(label);
+  wrap.appendChild(canvas);
+  return wrap;
+}
+
+function baseChartOptions(yLabel) {
+  return {
+    responsive: true,
+    plugins: {
+      legend: { display: false },
+      tooltip: {
+        backgroundColor: '#24211c',
+        titleFont: { family: CHART_FONT, size: 11 },
+        bodyFont: { family: CHART_FONT, size: 11 },
+        padding: 8,
+        cornerRadius: 6,
+      },
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { font: { family: CHART_FONT, size: 10 }, color: CHART_MUTED } },
+      y: {
+        beginAtZero: true,
+        grid: { color: CHART_GRID },
+        ticks: { font: { family: CHART_FONT, size: 10 }, color: CHART_MUTED },
+        title: { display: !!yLabel, text: yLabel, font: { family: CHART_FONT, size: 10 }, color: CHART_MUTED },
+      },
+    },
+  };
+}
+
+// Bar charts here are single-series magnitude comparisons (avg by weekday/month/season),
+// so one hue throughout is the right encoding — no categorical color assignment needed.
+function renderBarChart(canvasId, labels, buckets, unitLabel) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  const data = labels.map(l => (buckets[l] && buckets[l].avg) || 0);
+  const counts = labels.map(l => (buckets[l] && buckets[l].n) || 0);
+  const options = baseChartOptions(unitLabel);
+  options.plugins.tooltip.callbacks = {
+    label: (ctx) => `avg ${ctx.parsed.y.toFixed(1)} ${unitLabel}  (n=${counts[ctx.dataIndex]})`,
+  };
+  dashboardChartInstances[canvasId] = new Chart(ctx, {
+    type: 'bar',
+    data: { labels, datasets: [{ data, backgroundColor: CHART_COLOR, borderRadius: 4, maxBarThickness: 46 }] },
+    options,
+  });
+}
+
+function renderLineChart(canvasId, series, unitLabel) {
+  const ctx = document.getElementById(canvasId).getContext('2d');
+  dashboardChartInstances[canvasId] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: series.map(p => p.date),
+      datasets: [{ data: series.map(p => p.value), borderColor: CHART_COLOR, backgroundColor: 'transparent', borderWidth: 2, pointRadius: 0, tension: 0.15 }],
+    },
+    options: baseChartOptions(unitLabel),
+  });
+}
+
+async function loadAndRenderDashboard() {
+  const container = document.getElementById('dashboardCharts');
+  const hint = document.getElementById('dashboardHint');
+  const select = document.getElementById('dashboardItemSelect');
+  destroyDashboardCharts();
+  container.innerHTML = '';
+
+  if (!currentCategory) {
+    hint.textContent = 'Upload a Product Mix CSV and save some history to see trends here.';
+    return;
+  }
+
+  hint.textContent = 'Loading…';
+  const itemParam = select.value ? `&item=${encodeURIComponent(select.value)}` : '';
+  let data;
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/dashboard?category=${encodeURIComponent(currentCategory)}${itemParam}`);
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    data = await res.json();
+  } catch (e) {
+    hint.textContent = 'Could not load dashboard data — check the backend is running.';
+    console.error(e);
+    return;
+  }
+
+  if (data.nRecords === 0) {
+    hint.textContent = `No saved history yet for ${currentCategory} — save a few entries first.`;
+    return;
+  }
+
+  const itemLabel = select.value || 'all items combined';
+  if (data.mode === 'par') {
+    hint.textContent = `Based on ${data.nRecords} saved day(s) for ${itemLabel}. Hover a bar for its sample size.`;
+    container.appendChild(makeChartBlock('chartWeekday', 'Average daily sold by day of week'));
+    container.appendChild(makeChartBlock('chartMonth', 'Average daily sold by month'));
+    container.appendChild(makeChartBlock('chartSeason', 'Average daily sold by season'));
+    container.appendChild(makeChartBlock('chartTrend', 'Daily sold over time'));
+    renderBarChart('chartWeekday', WEEKDAY_ORDER.filter(d => data.byWeekday[d]), data.byWeekday, 'units/day');
+    renderBarChart('chartMonth', MONTH_ORDER.filter(m => data.byMonth[m]), data.byMonth, 'units/day');
+    renderBarChart('chartSeason', SEASON_ORDER.filter(s => data.bySeason[s]), data.bySeason, 'units/day');
+    renderLineChart('chartTrend', data.dailyTrend, 'units sold');
+  } else {
+    hint.textContent = `Based on ${data.nRecords} saved week(s) for ${itemLabel}. Hover a bar for its sample size.`;
+    container.appendChild(makeChartBlock('chartMonth', 'Average weekly usage by month'));
+    container.appendChild(makeChartBlock('chartSeason', 'Average weekly usage by season'));
+    container.appendChild(makeChartBlock('chartTrend', 'Weekly usage over time'));
+    renderBarChart('chartMonth', MONTH_ORDER.filter(m => data.byMonth[m]), data.byMonth, 'units/week');
+    renderBarChart('chartSeason', SEASON_ORDER.filter(s => data.bySeason[s]), data.bySeason, 'units/week');
+    renderLineChart('chartTrend', data.weeklyTrend, 'units used');
+  }
+}
+
+document.getElementById('dashboardItemSelect').addEventListener('change', () => { loadAndRenderDashboard(); });
 
 async function onCategoryChange() {
-  salesByType = {};
   damagedByType = {};
-  lastUploadDaysInFile = 1;
-  document.getElementById('fileStatus').textContent = '';
-  document.getElementById('csvInput').value = '';
   document.getElementById('damageStatus').textContent = '';
   document.getElementById('damageInput').value = '';
   renderCategoryBar();
-  renderModeToggle();
-  renderTypesManager();
 
+  if (!currentCategory) {
+    document.getElementById('modeHint').textContent = 'Upload a Product Mix CSV to get started.';
+    document.getElementById('damageUploadSection').style.display = 'none';
+    document.getElementById('historyContainer').innerHTML = '<p class="empty-state">No category selected yet.</p>';
+    forecastCache = {};
+    modelAccuracy = null;
+    renderModelAccuracyText();
+    renderTable();
+    await applyView();
+    return;
+  }
+
+  renderModeHint();
   const mode = currentMode();
   document.getElementById('damageUploadSection').style.display = mode === 'par' ? 'block' : 'none';
 
@@ -386,7 +529,7 @@ async function onCategoryChange() {
     leadTimeInput.value = 1;
     document.getElementById('saveWeekBtn').textContent = 'Save today\'s count';
     document.getElementById('noteText').innerHTML =
-      '<b>Avg daily sold</b> is pulled from your uploaded file (total sold ÷ days in file), blended with your saved history once you have some.<br>' +
+      '<b>Avg daily sold</b> comes from a machine-learning model trained on this category\'s saved history (day of week, month, and per-item patterns), blended with your just-uploaded file\'s rate. The line under each item explains what the model based its number on. Before there\'s enough history to train on, it falls back to a plain average.<br>' +
       '<b>Suggest order</b> = (avg daily sold × lead time) − on-hand count. Damage/waste is tracked separately below and does not affect this number — it\'s for spotting chronic over-ordering over time, not today\'s order.';
   } else {
     document.getElementById('stepTwoTitle').textContent = 'Step 2 — This week\'s numbers';
@@ -402,69 +545,24 @@ async function onCategoryChange() {
 
   document.getElementById('historyContainer').innerHTML = '<p class="empty-state">Loading…</p>';
   await fetchHistoryForCategory(currentCategory);
+  if (mode === 'par') {
+    await loadForecast(currentCategory, weekEndingInput.value);
+  } else {
+    forecastCache = {};
+    modelAccuracy = null;
+  }
+  renderModelAccuracyText();
   renderTable();
   renderHistory();
+  await applyView();
 }
 
-function renderTypesManager() {
-  typesManager.innerHTML = '';
-  const types = config.types[currentCategory] || [];
-  types.forEach((t, idx) => {
-    const row = document.createElement('div');
-    row.className = 'type-row';
-    row.innerHTML = `
-      <input type="text" class="label-input" value="${t.label}" data-idx="${idx}" data-field="label" placeholder="Item name" />
-      <input type="text" class="vendor-input" value="${t.vendor || ''}" data-idx="${idx}" data-field="vendor" placeholder="Vendor" />
-      <input type="text" class="keywords-input" value="${t.keywords}" data-idx="${idx}" data-field="keywords" placeholder="Matching keywords, comma-separated" />
-      <button class="remove-type" data-idx="${idx}">Remove</button>
-    `;
-    typesManager.appendChild(row);
-  });
-  typesManager.querySelectorAll('input').forEach(inp => {
-    inp.addEventListener('change', async (e) => {
-      const idx = parseInt(e.target.dataset.idx);
-      const field = e.target.dataset.field;
-      config.types[currentCategory][idx][field] = e.target.value;
-      await saveConfig();
-      renderTable();
-    });
-  });
-  typesManager.querySelectorAll('.remove-type').forEach(btn => {
-    btn.addEventListener('click', async (e) => {
-      const idx = parseInt(e.target.dataset.idx);
-      config.types[currentCategory].splice(idx, 1);
-      await saveConfig();
-      renderTypesManager();
-      renderTable();
-    });
-  });
-}
-
-document.getElementById('addTypeBtn').addEventListener('click', async () => {
-  if (!config.types[currentCategory]) config.types[currentCategory] = [];
-  config.types[currentCategory].push({ label: "New item", vendor: "", keywords: "" });
-  await saveConfig();
-  renderTypesManager();
-  renderTable();
-});
-
-function matchType(itemName) {
-  const n = (itemName || '').toLowerCase();
-  const types = config.types[currentCategory] || [];
-  let bestLabel = null;
-  let bestLen = 0;
-  for (const t of types) {
-    const keywords = (t.keywords || '').split(',').map(k => k.trim().toLowerCase()).filter(Boolean);
-    for (const k of keywords) {
-      if (k && n.includes(k) && k.length > bestLen) {
-        bestLabel = t.label;
-        bestLen = k.length;
-      }
-    }
-  }
-  return bestLabel;
-}
-
+// Category and vendor both come straight from the Class column (row[0]) —
+// each distinct Class becomes its own category/tab, with that same string
+// as the vendor for every item under it (see docs/decisions/0003-auto-detect-items-and-categories.md).
+// Item identity is the exact product Name (row[1]) — no keyword matching,
+// so a brand-new sandwich or milk type is picked up the moment it appears
+// in an upload, no config change needed.
 function parseProductMix(rows) {
   const dateRow = rows[0] || [];
   const labelRow = rows[1] || [];
@@ -479,16 +577,20 @@ function parseProductMix(rows) {
   }
   if (daysInFile === 0) daysInFile = Math.max(1, Math.floor((labelRow.length - startCol) / 2));
 
-  const totals = {};
+  const byClass = {}; // { className: { itemName: totalQty } }
   for (const row of dataRows) {
-    const type = matchType(row[1]);
-    if (!type) continue;
+    const className = (row[0] || '').trim();
+    const itemName = (row[1] || '').trim();
+    if (!className || !itemName) continue;
     for (let c = startCol; c < row.length; c += 2) {
       const qty = parseFloat(row[c]);
-      if (!isNaN(qty)) totals[type] = (totals[type] || 0) + qty;
+      if (!isNaN(qty)) {
+        byClass[className] = byClass[className] || {};
+        byClass[className][itemName] = (byClass[className][itemName] || 0) + qty;
+      }
     }
   }
-  return { totals, daysInFile };
+  return { byClass, daysInFile };
 }
 
 let lastUploadDaysInFile = 1;
@@ -500,12 +602,19 @@ document.getElementById('csvInput').addEventListener('change', (e) => {
     complete: (results) => {
       try {
         const parsed = parseProductMix(results.data);
-        salesByType = parsed.totals;
+        salesByClass = parsed.byClass;
         lastUploadDaysInFile = parsed.daysInFile;
-        const found = Object.keys(salesByType).length;
+        const classNames = Object.keys(salesByClass);
+        classNames.forEach(c => knownCategories.add(c));
+        if (!currentCategory && classNames.length > 0) {
+          currentCategory = classNames.slice().sort((a, b) => a.localeCompare(b))[0];
+        }
+        const totalItems = classNames.reduce((s, c) => s + Object.keys(salesByClass[c]).length, 0);
         document.getElementById('fileStatus').textContent =
-          found > 0 ? `Loaded — matched ${found} item type(s) across ${lastUploadDaysInFile} day(s)` : 'Loaded, but no matching items found — check your keywords above';
-        renderTable();
+          classNames.length > 0
+            ? `Loaded — ${classNames.length} categor${classNames.length === 1 ? 'y' : 'ies'}, ${totalItems} item(s) across ${lastUploadDaysInFile} day(s)`
+            : 'Loaded, but no rows had both a Class and a Name — check the file format';
+        onCategoryChange();
       } catch (err) {
         document.getElementById('fileStatus').textContent = 'Could not read this file — check the format';
         console.error(err);
@@ -520,7 +629,9 @@ document.getElementById('csvInput').addEventListener('change', (e) => {
 
 // Inventory Log (.xlsx) — separate export, has per-event rows with an Action column
 // (Damage, Return, etc). Only "Damage" rows count as waste; "Return" goes back to
-// the vendor and isn't waste.
+// the vendor and isn't waste. This export has no Class column, so damage rows are
+// matched by exact product name against whatever items are already known for the
+// currently selected category (from the latest upload or saved history).
 function parseDamageLog(rows) {
   // Row 0-1: Establishment/Date metadata, row 2 blank, row 3: real headers, data from row 4
   const headerRowIdx = rows.findIndex(r => r[0] === 'Name' && r[1] === 'Action');
@@ -530,16 +641,19 @@ function parseDamageLog(rows) {
   const actionCol = headers.indexOf('Action');
   const qtyCol = headers.indexOf('Quantity');
 
+  const knownByLower = new Map(getKnownItemsForCategory(currentCategory).map(n => [n.toLowerCase(), n]));
+
   const totals = {};
   for (let i = headerRowIdx + 1; i < rows.length; i++) {
     const row = rows[i];
     if (!row || !row[nameCol]) continue;
     const action = (row[actionCol] || '').toString().trim().toLowerCase();
     if (action !== 'damage') continue; // skip Returns and anything else
-    const type = matchType(row[nameCol]);
-    if (!type) continue;
+    const rawName = (row[nameCol] || '').toString().trim();
+    const canonical = knownByLower.get(rawName.toLowerCase());
+    if (!canonical) continue; // not a currently-tracked item in this category
     const qty = parseFloat(row[qtyCol]) || 0;
-    totals[type] = (totals[type] || 0) + qty;
+    totals[canonical] = (totals[canonical] || 0) + qty;
   }
   return totals;
 }
@@ -557,7 +671,7 @@ document.getElementById('damageInput').addEventListener('change', (e) => {
       const found = Object.keys(damagedByType).length;
       const totalDamaged = Object.values(damagedByType).reduce((a,b) => a+b, 0);
       document.getElementById('damageStatus').textContent =
-        found > 0 ? `Loaded — ${totalDamaged} damaged unit(s) across ${found} item(s)` : 'Loaded, but no Damage rows matched your item types';
+        found > 0 ? `Loaded — ${totalDamaged} damaged unit(s) across ${found} item(s)` : 'Loaded, but no Damage rows matched known items for this category';
       renderTable();
     } catch (err) {
       document.getElementById('damageStatus').textContent = 'Could not read this file — check the format';
@@ -566,6 +680,18 @@ document.getElementById('damageInput').addEventListener('change', (e) => {
   };
   reader.readAsArrayBuffer(file);
 });
+
+// Union of {items in the latest upload for this category} ∪ {items already
+// in saved history for this category} — this is what drives which rows show
+// up, now that there's no manually maintained item list.
+function getKnownItemsForCategory(category) {
+  if (!category) return [];
+  const names = new Set(Object.keys(salesByClass[category] || {}));
+  (history[category] || []).forEach(week => {
+    Object.keys(week.entries || {}).forEach(name => names.add(name));
+  });
+  return Array.from(names).sort((a, b) => a.localeCompare(b));
+}
 
 function getLastEnding(type) {
   const past = (history[currentCategory] || []).filter(w => w.entries[type]).slice().reverse();
@@ -624,26 +750,34 @@ function renderTableHead() {
 function renderTable() {
   renderTableHead();
   entryBody.innerHTML = '';
-  const types = config.types[currentCategory] || [];
   const mode = currentMode();
   const colCount = mode === 'par' ? PAR_HEAD.length : RECONCILIATION_HEAD.length;
-  if (types.length === 0) {
-    entryBody.innerHTML = `<tr><td colspan="${colCount}"><span class="empty-state">No item types defined yet — add some above.</span></td></tr>`;
+
+  if (!currentCategory) {
+    entryBody.innerHTML = `<tr><td colspan="${colCount}"><span class="empty-state">Upload a Product Mix CSV to get started — categories and items are detected automatically.</span></td></tr>`;
     return;
   }
 
-  types.forEach(t => {
-    const type = t.label;
-    const vendor = t.vendor || '—';
-    const sold = salesByType[type] || 0;
+  const items = getKnownItemsForCategory(currentCategory);
+  if (items.length === 0) {
+    entryBody.innerHTML = `<tr><td colspan="${colCount}"><span class="empty-state">No items found yet for ${currentCategory} — upload this week's Product Mix CSV.</span></td></tr>`;
+    return;
+  }
+
+  const salesForCategory = salesByClass[currentCategory] || {};
+
+  items.forEach(type => {
+    const vendor = currentCategory; // vendor == Class == category, by design
+    const sold = salesForCategory[type] || 0;
     const damaged = damagedByType[type] || 0;
     const tr = document.createElement('tr');
     tr.dataset.type = type;
-    tr.dataset.vendor = t.vendor || '';
+    tr.dataset.vendor = vendor;
 
     if (mode === 'par') {
+      const reasoning = forecastCache[type] && forecastCache[type].reasoning;
       tr.innerHTML = `
-        <td>${type}</td>
+        <td>${type}${reasoning ? `<div class="reason">${reasoning}</div>` : ''}</td>
         <td class="computed">${vendor}</td>
         <td><input type="number" min="0" data-role="onHand" value="0" /></td>
         <td class="computed" data-role="sold">${sold}</td>
@@ -672,7 +806,13 @@ function renderTable() {
 }
 
 leadTimeInput.addEventListener('input', recomputeAll);
-weekEndingInput.addEventListener('change', recomputeAll);
+weekEndingInput.addEventListener('change', async () => {
+  if (currentCategory && currentMode() === 'par') {
+    await loadForecast(currentCategory, weekEndingInput.value);
+    renderModelAccuracyText();
+  }
+  recomputeAll();
+});
 
 function recomputeAll() {
   const mode = currentMode();
@@ -685,8 +825,12 @@ function recomputeAll() {
       const onHand = parseFloat(tr.querySelector('[data-role="onHand"]').value) || 0;
 
       const fileRate = lastUploadDaysInFile > 0 ? sold / lastUploadDaysInFile : 0;
-      const histRate = avgDailySoldFromHistory(type, weekEndingInput.value);
-      // blend: prefer saved history once it exists, but factor in the latest upload too
+      // Prefer the ML model's estimate (backend/ml_forecasting.py); fall back to the
+      // old client-side day-of-week average if the forecast couldn't be loaded (offline,
+      // backend down) so the tool still works. Either way, blend in the just-uploaded
+      // file's rate — the backend can't see data that hasn't been saved yet.
+      const cachedEstimate = forecastCache[type] && forecastCache[type].estimate;
+      const histRate = typeof cachedEstimate === 'number' ? cachedEstimate : avgDailySoldFromHistory(type, weekEndingInput.value);
       const avgDaily = histRate !== null ? (histRate * 0.7 + fileRate * 0.3) : fileRate;
 
       tr.querySelector('[data-role="avgDailySold"]').textContent = avgDaily.toFixed(1);
@@ -712,19 +856,19 @@ function recomputeAll() {
   });
 }
 
-// Item types: local to this browser only. Rarely changes, so no sync needed —
-// if you add a type on your laptop, add the same one on Aiden's when he first needs it
-// (or just edit DEFAULT_CONFIG above and it'll apply everywhere).
-async function loadConfig() {
+// Categories are whatever's already been saved, server-side — this is what
+// lets a brand-new category (a new Class value) show up as soon as its
+// first upload happens, with no manual "+ New category" step.
+async function loadKnownCategories() {
   try {
-    const raw = localStorage.getItem(CONFIG_KEY);
-    config = raw ? JSON.parse(raw) : JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+    const res = await fetch(`${API_BASE_URL}/api/categories`);
+    if (!res.ok) throw new Error(`Server returned ${res.status}`);
+    const cats = await res.json();
+    cats.forEach(c => knownCategories.add(c));
   } catch (e) {
-    config = JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+    console.error('Could not load categories from server:', e);
+    showToast('Could not reach server — showing local data only');
   }
-}
-async function saveConfig() {
-  localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
 }
 
 // Weekly history: synced through the backend so it's the same for everyone.
@@ -872,7 +1016,7 @@ document.getElementById('saveWeekBtn').addEventListener('click', async () => {
 });
 
 document.getElementById('resetFormBtn').addEventListener('click', () => {
-  salesByType = {};
+  salesByClass = {};
   damagedByType = {};
   document.getElementById('fileStatus').textContent = '';
   document.getElementById('csvInput').value = '';
@@ -882,7 +1026,10 @@ document.getElementById('resetFormBtn').addEventListener('click', () => {
 });
 
 (async function init() {
-  await loadConfig();
+  await loadKnownCategories();
+  if (!currentCategory && knownCategories.size > 0) {
+    currentCategory = Array.from(knownCategories).sort((a, b) => a.localeCompare(b))[0];
+  }
   await onCategoryChange();
 })();
 </script>
