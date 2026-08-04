@@ -13,8 +13,12 @@ Designed so a future external signal (weather, school calendar, etc.) is
 just one more feature column — not built now, out of scope, but the shape
 is there. See docs/decisions/0004-ml-forecasting.md.
 
-Milk's reconciliation-mode suggestion math is untouched by this module —
-it only ever sees par-mode (avgDailySold-shaped) history.
+Milk's reconciliation-mode Suggest-order math is untouched by this module —
+`/api/forecast` still rejects reconciliation categories outright (see
+main.py). But reconciliation-mode history CAN feed the dashboard's pattern
+learning (see daily_rate() below and docs/decisions/0007-backfill-milk-sold-pattern.md),
+as long as it's genuinely daily-rate data (a backfilled day), never a real
+week's aggregate `sold` total — mixing those units would corrupt the model.
 """
 
 import datetime
@@ -49,10 +53,34 @@ def _parse_date(date_str):
     return datetime.date(y, m, d)
 
 
+def daily_rate(entry):
+    """Extract a comparable 'quantity for one day' from a saved entry, or
+    None if this entry can't safely be treated as one.
+
+    Par-mode entries always qualify via avgDailySold. Reconciliation-mode
+    entries only qualify if they're missing `totalUsed` — that's exactly a
+    backfilled day (see scripts/backfill_import.py), which only ever stores
+    `sold`. A REAL reconciliation week (has totalUsed) always has `sold`
+    too, but that figure is a whole week's total, not a daily rate — mixing
+    it in here would silently corrupt the day-of-week pattern the model
+    learns. See docs/decisions/0007-backfill-milk-sold-pattern.md.
+    """
+    if not isinstance(entry, dict):
+        return None
+    rate = entry.get("avgDailySold")
+    if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+        return float(rate)
+    if "totalUsed" not in entry:
+        rate = entry.get("sold")
+        if isinstance(rate, (int, float)) and not isinstance(rate, bool):
+            return float(rate)
+    return None
+
+
 def build_training_frame(weeks):
     """weeks: history rows shaped like db.fetch_history's output —
     [{weekEnding, entries}]. Returns a DataFrame with one row per (date,
-    item) that has a numeric avgDailySold: columns date, item, rate."""
+    item) that has a usable daily_rate(): columns date, item, rate."""
     records = []
     for week in weeks:
         date_str = week.get("weekEnding")
@@ -63,12 +91,20 @@ def build_training_frame(weeks):
         except (ValueError, TypeError):
             continue
         for item, entry in (week.get("entries") or {}).items():
-            rate = entry.get("avgDailySold") if isinstance(entry, dict) else None
-            if isinstance(rate, (int, float)) and not isinstance(rate, bool):
-                records.append({"date": date, "item": item, "rate": float(rate)})
+            rate = daily_rate(entry)
+            if rate is not None:
+                records.append({"date": date, "item": item, "rate": rate})
+    return frame_from_records([(r["date"], r["item"], r["rate"]) for r in records])
+
+
+def frame_from_records(records):
+    """records: [(date, item, rate)], already filtered/scoped by the caller
+    (e.g. dashboard.py, which needs the same rows for a chart and for
+    validate()). Same output shape as build_training_frame."""
     if not records:
         return pd.DataFrame(columns=["date", "item", "rate"])
-    return pd.DataFrame(records).sort_values("date").reset_index(drop=True)
+    df = pd.DataFrame(records, columns=["date", "item", "rate"])
+    return df.sort_values("date").reset_index(drop=True)
 
 
 def _add_calendar_features(df, min_date):

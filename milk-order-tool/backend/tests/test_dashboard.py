@@ -58,6 +58,42 @@ def test_reconciliation_dashboard_has_no_weekday_breakdown():
     assert result["bySeason"]["Winter"]["n"] == 1
 
 
+def test_reconciliation_dashboard_sold_pattern_ignores_real_weeks():
+    # Real reconciliation weeks (totalUsed present) must NOT leak into
+    # soldPattern — their `sold` is a week's total, not a daily rate.
+    result = dashboard.reconciliation_dashboard(reconciliation_weeks())
+    assert result["soldPattern"]["nRecords"] == 0
+    assert result["soldPattern"]["byWeekday"] == {}
+    assert result["soldPattern"]["modelAccuracy"] is None
+
+
+def test_reconciliation_dashboard_sold_pattern_uses_backfilled_days_only():
+    weeks = reconciliation_weeks() + [
+        # Backfilled days: only `sold`, no totalUsed at all.
+        {"weekEnding": "2026-08-03", "entries": {"Whole Milk": {"vendor": "Smith Brothers Farms", "sold": 9.0}}},  # Monday
+        {"weekEnding": "2026-08-10", "entries": {"Whole Milk": {"vendor": "Smith Brothers Farms", "sold": 11.0}}},  # Monday
+    ]
+    result = dashboard.reconciliation_dashboard(weeks)
+    # the real weekly totalUsed rollup is untouched by the backfilled days
+    assert result["nRecords"] == 3
+    # the new sold-pattern signal only reflects the two backfilled days
+    assert result["soldPattern"]["nRecords"] == 2
+    assert result["soldPattern"]["byWeekday"]["Monday"]["n"] == 2
+    assert result["soldPattern"]["byWeekday"]["Monday"]["avg"] == 10.0
+
+
+def test_reconciliation_dashboard_sold_pattern_item_filter():
+    weeks = [
+        {"weekEnding": "2026-08-03", "entries": {
+            "Whole Milk": {"sold": 9.0},
+            "2% Milk": {"sold": 4.0},
+        }},
+    ]
+    result = dashboard.reconciliation_dashboard(weeks, item="2% Milk")
+    assert result["soldPattern"]["nRecords"] == 1
+    assert result["soldPattern"]["dailyTrend"][0]["value"] == 4.0
+
+
 def test_dashboard_for_category_dispatches_on_mode():
     par_result = dashboard.dashboard_for_category(par_weeks(), is_reconciliation=False)
     assert par_result["mode"] == "par"

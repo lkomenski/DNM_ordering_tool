@@ -13,6 +13,7 @@ ones when adding new ones.
 | [0004](0004-ml-forecasting.md) | ML-based demand forecasting for par-mode categories |
 | [0005](0005-dashboards.md) | Sales trend dashboards |
 | [0006](0006-backend-folder-layout.md) | Backend folder layout (app/scripts/tests split) |
+| [0007](0007-backfill-milk-sold-pattern.md) | Backfill Milk's sold-quantity pattern (dashboard-only) |
 
 See also [`../future-ideas.md`](../future-ideas.md) — things discussed and
 deliberately deferred (weather features, hour-of-day data, labor/scheduling),

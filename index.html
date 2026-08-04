@@ -239,9 +239,39 @@ const API_BASE_URL = "https://dnmorderingtool-staging.up.railway.app";
 // can't express is which category needs Beginning+Ordered-Sold-Ending
 // reconciliation math instead of plain par ordering (that's a business rule,
 // not a data fact), so that's the one hardcoded exception here. Mirrors
-// RECONCILIATION_CLASSES in backend/backfill_import.py — keep both in sync.
+// RECONCILIATION_CLASSES in backend/scripts/backfill_import.py and
+// backend/app/main.py — keep all three in sync.
 // See docs/decisions/0003-auto-detect-items-and-categories.md.
 const RECONCILIATION_CLASSES = new Set(["Smith Brothers Farms"]);
+
+// Products that show up under a tracked Class by mistake in Revel but
+// aren't actually part of this tool's ordering (e.g. a grocery item rung up
+// under the same department as milk). Mirrors EXCLUDED_ITEMS in
+// backend/scripts/backfill_import.py — a hardcoded exception since "this
+// doesn't belong here" is operational knowledge, not something inferable
+// from the data. Matched case-insensitively.
+const EXCLUDED_ITEMS = new Set([
+  "Beechers Worlds Best Mac + Cheese 20oz",
+  "Simply Organic Mild Taco 1.13oz",
+  "Simply Organic Spicy Taco 1.13oz",
+].map(s => s.toLowerCase()));
+
+// Product names that refer to the same underlying item under different
+// vendor/brand labels (e.g. a distributor switch) — merged into one
+// canonical item so the ML model and dashboard see one continuous series
+// instead of two artificially fragmented ones. Mirrors ITEM_ALIASES in
+// backend/scripts/backfill_import.py — keep both in sync. Matched
+// case-insensitively; see docs/decisions/0008-item-name-aliasing.md.
+const ITEM_ALIASES = new Map([
+  ["alpenrose 2% milk - gallon", "2% Milk (Gallon)"],
+  ["smith brothers 2% milk - gallon", "2% Milk (Gallon)"],
+  ["alpenrose chocolate reduced fat 2% milk - pint", "Chocolate 2% Milk (Pint)"],
+  ["smith brothers chocolate 2% milk - pint", "Chocolate 2% Milk (Pint)"],
+]);
+
+function canonicalItemName(rawName) {
+  return ITEM_ALIASES.get(rawName.toLowerCase()) || rawName;
+}
 
 let knownCategories = new Set(); // populated from /api/categories + whatever's in the latest upload
 let history = {};
@@ -312,13 +342,16 @@ async function loadForecast(category, targetDateStr) {
   }
 }
 
-function renderModelAccuracyText() {
-  const el = document.getElementById('modelAccuracyText');
-  if (!modelAccuracy) { el.textContent = ''; return; }
-  const pct = modelAccuracy.improvementOverNaive !== null ? (modelAccuracy.improvementOverNaive * 100).toFixed(0) : null;
-  el.innerHTML = `<b>Model accuracy</b>: off by ${modelAccuracy.mae.toFixed(1)}/day on average on the most recent ${modelAccuracy.nHoldout} saved day(s) it hadn't seen` +
+function modelAccuracyHtml(acc) {
+  if (!acc) return '';
+  const pct = acc.improvementOverNaive !== null ? (acc.improvementOverNaive * 100).toFixed(0) : null;
+  return `<b>Model accuracy</b>: off by ${acc.mae.toFixed(1)}/day on average on the most recent ${acc.nHoldout} saved day(s) it hadn't seen` +
     (pct !== null ? ` — ${pct}% better than a flat average` : '') +
-    `, trained on ${modelAccuracy.nTrain} day(s).`;
+    `, trained on ${acc.nTrain} day(s).`;
+}
+
+function renderModelAccuracyText() {
+  document.getElementById('modelAccuracyText').innerHTML = modelAccuracyHtml(modelAccuracy);
 }
 
 function renderModeHint() {
@@ -470,7 +503,8 @@ async function loadAndRenderDashboard() {
     return;
   }
 
-  if (data.nRecords === 0) {
+  const hasSoldPattern = data.soldPattern && data.soldPattern.nRecords > 0;
+  if (data.nRecords === 0 && !hasSoldPattern) {
     hint.textContent = `No saved history yet for ${currentCategory} — save a few entries first.`;
     return;
   }
@@ -487,13 +521,42 @@ async function loadAndRenderDashboard() {
     renderBarChart('chartSeason', SEASON_ORDER.filter(s => data.bySeason[s]), data.bySeason, 'units/day');
     renderLineChart('chartTrend', data.dailyTrend, 'units sold');
   } else {
-    hint.textContent = `Based on ${data.nRecords} saved week(s) for ${itemLabel}. Hover a bar for its sample size.`;
-    container.appendChild(makeChartBlock('chartMonth', 'Average weekly usage by month'));
-    container.appendChild(makeChartBlock('chartSeason', 'Average weekly usage by season'));
-    container.appendChild(makeChartBlock('chartTrend', 'Weekly usage over time'));
-    renderBarChart('chartMonth', MONTH_ORDER.filter(m => data.byMonth[m]), data.byMonth, 'units/week');
-    renderBarChart('chartSeason', SEASON_ORDER.filter(s => data.bySeason[s]), data.bySeason, 'units/week');
-    renderLineChart('chartTrend', data.weeklyTrend, 'units used');
+    hint.textContent = data.nRecords > 0
+      ? `Based on ${data.nRecords} saved week(s) for ${itemLabel}. Hover a bar for its sample size.`
+      : `No real reconciliation weeks saved yet for ${itemLabel} — showing the backfilled sold-quantity pattern below.`;
+
+    if (data.nRecords > 0) {
+      container.appendChild(makeChartBlock('chartMonth', 'Average weekly usage by month (hidden café usage)'));
+      container.appendChild(makeChartBlock('chartSeason', 'Average weekly usage by season (hidden café usage)'));
+      container.appendChild(makeChartBlock('chartTrend', 'Weekly usage over time (hidden café usage)'));
+      renderBarChart('chartMonth', MONTH_ORDER.filter(m => data.byMonth[m]), data.byMonth, 'units/week');
+      renderBarChart('chartSeason', SEASON_ORDER.filter(s => data.bySeason[s]), data.bySeason, 'units/week');
+      renderLineChart('chartTrend', data.weeklyTrend, 'units used');
+    }
+
+    if (hasSoldPattern) {
+      const sp = data.soldPattern;
+      const note = document.createElement('p');
+      note.className = 'hint';
+      note.style.cssText = 'margin:28px 0 8px; font-weight:600; color:var(--ink);';
+      note.textContent = `Sold-quantity pattern (from backfilled sales data, ${sp.nRecords} day(s)) — informational only, doesn't affect the Suggest-order number`;
+      container.appendChild(note);
+      container.appendChild(makeChartBlock('chartSoldWeekday', 'Average sold per day by day of week'));
+      container.appendChild(makeChartBlock('chartSoldMonth', 'Average sold per day by month'));
+      container.appendChild(makeChartBlock('chartSoldSeason', 'Average sold per day by season'));
+      container.appendChild(makeChartBlock('chartSoldTrend', 'Sold quantity over time'));
+      renderBarChart('chartSoldWeekday', WEEKDAY_ORDER.filter(d => sp.byWeekday[d]), sp.byWeekday, 'units/day');
+      renderBarChart('chartSoldMonth', MONTH_ORDER.filter(m => sp.byMonth[m]), sp.byMonth, 'units/day');
+      renderBarChart('chartSoldSeason', SEASON_ORDER.filter(s => sp.bySeason[s]), sp.bySeason, 'units/day');
+      renderLineChart('chartSoldTrend', sp.dailyTrend, 'units sold');
+
+      if (sp.modelAccuracy) {
+        const acc = document.createElement('p');
+        acc.className = 'note';
+        acc.innerHTML = modelAccuracyHtml(sp.modelAccuracy);
+        container.appendChild(acc);
+      }
+    }
   }
 }
 
@@ -582,6 +645,7 @@ function parseProductMix(rows) {
     const className = (row[0] || '').trim();
     const itemName = (row[1] || '').trim();
     if (!className || !itemName) continue;
+    if (EXCLUDED_ITEMS.has(itemName.toLowerCase())) continue;
     for (let c = startCol; c < row.length; c += 2) {
       const qty = parseFloat(row[c]);
       if (!isNaN(qty)) {
@@ -690,13 +754,21 @@ function getKnownItemsForCategory(category) {
   (history[category] || []).forEach(week => {
     Object.keys(week.entries || {}).forEach(name => names.add(name));
   });
-  return Array.from(names).sort((a, b) => a.localeCompare(b));
+  return Array.from(names)
+    .filter(n => !EXCLUDED_ITEMS.has(n.toLowerCase()))
+    .sort((a, b) => a.localeCompare(b));
 }
 
+// Only a saved week with a real numeric endingCount can serve as next
+// week's "Beginning inventory" carry-forward — a backfilled Milk day (see
+// docs/decisions/0007-backfill-milk-sold-pattern.md) only ever has `sold`,
+// so it's skipped here rather than being misread as "ending count 0".
 function getLastEnding(type) {
-  const past = (history[currentCategory] || []).filter(w => w.entries[type]).slice().reverse();
+  const past = (history[currentCategory] || [])
+    .filter(w => w.entries[type] && typeof w.entries[type].endingCount === 'number')
+    .slice().reverse();
   if (past.length === 0) return 0;
-  return past[0].entries[type].endingCount || 0;
+  return past[0].entries[type].endingCount;
 }
 
 function avgWeeklyTotalUse(type) {
@@ -958,12 +1030,15 @@ function renderHistory() {
       });
     });
   } else {
+    // Backfilled Milk days (see docs/decisions/0007-backfill-milk-sold-pattern.md)
+    // only ever have `sold` — every other field shows as "—", not "undefined".
+    const numOrDash = (v) => typeof v === 'number' ? v : '—';
     html = vendorHtml + '<table class="history-table"><thead><tr><th>Week ending</th><th>Item</th><th>Vendor</th><th>Ordered</th><th>Sold</th><th>Ending</th><th>Gap</th><th>Total used</th></tr></thead><tbody>';
     weeks.slice().reverse().forEach(week => {
       Object.entries(week.entries).forEach(([type, e]) => {
         html += `<tr>
-          <td>${week.weekEnding}</td><td>${type}</td><td>${e.vendor || '—'}</td><td>${e.ordered}</td>
-          <td>${e.sold}</td><td>${e.endingCount}</td><td>${e.gap}</td><td>${e.totalUsed}</td>
+          <td>${week.weekEnding}</td><td>${type}</td><td>${e.vendor || '—'}</td><td>${numOrDash(e.ordered)}</td>
+          <td>${numOrDash(e.sold)}</td><td>${numOrDash(e.endingCount)}</td><td>${numOrDash(e.gap)}</td><td>${numOrDash(e.totalUsed)}</td>
         </tr>`;
       });
     });

@@ -117,9 +117,19 @@ yet (a sandwich or milk type you haven't seen before) is picked up
 automatically. Pass `--only-category "Memoranda"` if the file has multiple
 product lines mixed together and you only want to import one for now.
 
-**Reconciliation-mode categories (Milk) are skipped automatically** — that
-math needs a real physical beginning/ending count each week, which can't be
-reconstructed from a sales export after the fact.
+**Reconciliation-mode categories (Milk) get backfilled too, but only with
+`sold` quantity** — never `beginning`/`ordered`/`endingCount`/`gap`/`totalUsed`,
+since those need a real physical count each week that can't be reconstructed
+after the fact. This can't touch the Suggest-order number (that only ever
+reads `totalUsed`, which these rows deliberately don't have) — it only feeds
+Milk's Dashboard view (a sold-quantity pattern by weekday/month/season, plus
+a model-accuracy check), same as it does for par-mode categories. See
+`docs/decisions/0007-backfill-milk-sold-pattern.md`.
+
+Products that get rung up under a tracked Class by mistake (e.g. a grocery
+item sharing a department with milk) can be excluded by adding them to
+`EXCLUDED_ITEMS` in both `index.html` and `backend/scripts/backfill_import.py`
+— a small hardcoded list, matched case-insensitively, kept in sync by hand.
 
 This creates one real saved entry per day (not one blended average), which
 is exactly what `backend/app/ml_forecasting.py` trains on — the more you

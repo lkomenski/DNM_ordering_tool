@@ -2,9 +2,13 @@
 Sales-trend dashboard aggregation — read-only summaries over saved history,
 mode-aware. Par-mode categories (avgDailySold-shaped entries) get weekday,
 month/season, and daily-trend breakdowns; reconciliation-mode categories
-(Milk; totalUsed-shaped entries) get month/season rollups and a weekly
-trend only — weekly rows carry no weekday signal, so there's no weekday
-chart for those. See docs/decisions/0005-dashboards.md.
+(Milk; totalUsed-shaped entries) get month/season/weekly-trend "usage"
+rollups (the hidden café-usage signal, from real weekly entries only) *plus*
+a "sold pattern" sub-object — weekday/month/season/daily-trend breakdowns
+from any daily-rate-shaped data (backfilled days; see
+docs/decisions/0007-backfill-milk-sold-pattern.md), the same shape par
+categories get, so Milk can show a genuine day-of-week/month/season sold
+pattern even though its Suggest-order math stays untouched.
 
 This never touches Milk's suggestion math — it only reads and summarizes
 what's already saved.
@@ -12,6 +16,8 @@ what's already saved.
 
 import calendar
 import datetime
+
+from . import ml_forecasting
 
 SEASON_BY_MONTH = {
     12: "Winter", 1: "Winter", 2: "Winter",
@@ -52,6 +58,28 @@ def _extract_records(weeks, value_field, item_filter=None):
     return records
 
 
+def _daily_records(weeks, item_filter=None):
+    """[(date, item, rate)] using ml_forecasting.daily_rate — the same rule
+    that decides what feeds the ML model, so the dashboard's sold-pattern
+    charts and the model always agree on which rows count."""
+    records = []
+    for week in weeks:
+        date_str = week.get("weekEnding")
+        if not date_str:
+            continue
+        try:
+            date = _parse_date(date_str)
+        except (ValueError, TypeError):
+            continue
+        for item, entry in (week.get("entries") or {}).items():
+            if item_filter and item != item_filter:
+                continue
+            rate = ml_forecasting.daily_rate(entry)
+            if rate is not None:
+                records.append((date, item, rate))
+    return records
+
+
 def _group_avg(records, key_fn):
     buckets = {}
     for date, _item, value in records:
@@ -75,37 +103,50 @@ def _all_items(weeks):
     return sorted(items)
 
 
-def par_dashboard(weeks, item=None):
-    records = _extract_records(weeks, "avgDailySold", item_filter=item)
-
-    by_weekday = {WEEKDAY_NAMES[k]: v for k, v in _group_avg(records, lambda d: d.weekday()).items()}
-    by_month = {calendar.month_name[k]: v for k, v in _group_avg(records, lambda d: d.month).items()}
-    by_season = _group_avg(records, lambda d: SEASON_BY_MONTH[d.month])
-
+def _pattern_block(records):
+    """Shared weekday/month/season/trend shape, used for par_dashboard
+    directly and for reconciliation_dashboard's soldPattern sub-object."""
     return {
-        "mode": "par",
-        "items": _all_items(weeks),
-        "byWeekday": by_weekday,
-        "byMonth": by_month,
-        "bySeason": by_season,
+        "byWeekday": {WEEKDAY_NAMES[k]: v for k, v in _group_avg(records, lambda d: d.weekday()).items()},
+        "byMonth": {calendar.month_name[k]: v for k, v in _group_avg(records, lambda d: d.month).items()},
+        "bySeason": _group_avg(records, lambda d: SEASON_BY_MONTH[d.month]),
         "dailyTrend": _series(records),
         "nRecords": len(records),
     }
 
 
-def reconciliation_dashboard(weeks, item=None):
-    records = _extract_records(weeks, "totalUsed", item_filter=item)
+def par_dashboard(weeks, item=None):
+    records = _daily_records(weeks, item_filter=item)
+    return {"mode": "par", "items": _all_items(weeks), **_pattern_block(records)}
 
-    by_month = {calendar.month_name[k]: v for k, v in _group_avg(records, lambda d: d.month).items()}
-    by_season = _group_avg(records, lambda d: SEASON_BY_MONTH[d.month])
+
+def reconciliation_dashboard(weeks, item=None):
+    """Milk (and any other reconciliation-mode category). Two independent
+    signals: `byMonth`/`bySeason`/`weeklyTrend` are the hidden-usage rollup
+    from real weekly entries (totalUsed) — untouched, as before. `soldPattern`
+    is a separate weekday/month/season/trend breakdown from daily-rate-shaped
+    data (i.e. backfilled days — see ml_forecasting.daily_rate), plus a
+    modelAccuracy check proving the ML layer is actually learning from it.
+    Real weekly entries never contribute to soldPattern (their `sold` is a
+    week's total, not a daily rate — see daily_rate's docstring)."""
+    usage_records = _extract_records(weeks, "totalUsed", item_filter=item)
+    by_month = {calendar.month_name[k]: v for k, v in _group_avg(usage_records, lambda d: d.month).items()}
+    by_season = _group_avg(usage_records, lambda d: SEASON_BY_MONTH[d.month])
+
+    sold_records = _daily_records(weeks, item_filter=item)
+    sold_pattern = _pattern_block(sold_records)
+    sold_pattern["modelAccuracy"] = (
+        ml_forecasting.validate(ml_forecasting.frame_from_records(sold_records)) if sold_records else None
+    )
 
     return {
         "mode": "reconciliation",
         "items": _all_items(weeks),
         "byMonth": by_month,
         "bySeason": by_season,
-        "weeklyTrend": _series(records),
-        "nRecords": len(records),
+        "weeklyTrend": _series(usage_records),
+        "nRecords": len(usage_records),
+        "soldPattern": sold_pattern,
     }
 
 
