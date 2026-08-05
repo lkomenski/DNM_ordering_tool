@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+data.db
+*.db
+
+# Real sales exports (e.g. dropped into tests/ for local backfill dry-runs)
+# are business data, not test fixtures — never commit them.
+*.csv
