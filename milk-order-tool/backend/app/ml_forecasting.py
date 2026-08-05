@@ -79,11 +79,11 @@ def daily_rate(entry):
 
 def build_training_frame(weeks):
     """weeks: history rows shaped like db.fetch_history's output —
-    [{weekEnding, entries}]. Returns a DataFrame with one row per (date,
+    [{entryDate, entries}]. Returns a DataFrame with one row per (date,
     item) that has a usable daily_rate(): columns date, item, rate."""
     records = []
     for week in weeks:
-        date_str = week.get("weekEnding")
+        date_str = week.get("entryDate")
         if not date_str:
             continue
         try:

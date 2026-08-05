@@ -179,8 +179,8 @@
 
     <div class="week-meta">
       <div class="field">
-        <label for="weekEnding" id="dateFieldLabel">Week ending</label>
-        <input type="date" id="weekEnding" />
+        <label for="entryDate" id="dateFieldLabel">Week ending</label>
+        <input type="date" id="entryDate" />
       </div>
       <div class="field">
         <label for="leadTime" id="leadTimeLabel">Lead time (weeks)</label>
@@ -282,13 +282,13 @@ let forecastCache = {}; // { itemName: { estimate, reasoning } } — from the ML
 let modelAccuracy = null; // { mae, naiveMae, nHoldout, nTrain, improvementOverNaive } | null
 
 const entryBody = document.getElementById('entryBody');
-const weekEndingInput = document.getElementById('weekEnding');
+const entryDateInput = document.getElementById('entryDate');
 const leadTimeInput = document.getElementById('leadTime');
 const toast = document.getElementById('toast');
 const categoryBar = document.getElementById('categoryBar');
 
 function todayISO() { return new Date().toISOString().slice(0,10); }
-weekEndingInput.value = todayISO();
+entryDateInput.value = todayISO();
 
 function showToast(msg) {
   toast.textContent = msg;
@@ -609,7 +609,7 @@ async function onCategoryChange() {
   document.getElementById('historyContainer').innerHTML = '<p class="empty-state">Loading…</p>';
   await fetchHistoryForCategory(currentCategory);
   if (mode === 'par') {
-    await loadForecast(currentCategory, weekEndingInput.value);
+    await loadForecast(currentCategory, entryDateInput.value);
   } else {
     forecastCache = {};
     modelAccuracy = null;
@@ -791,12 +791,12 @@ function dayOfWeekFromDateStr(str) {
 // enough same-weekday history (useful early on, or for lightly-backfilled items).
 function avgDailySoldFromHistory(type, targetDateStr) {
   const past = (history[currentCategory] || [])
-    .filter(w => w.entries[type] && typeof w.entries[type].avgDailySold === 'number' && w.weekEnding);
+    .filter(w => w.entries[type] && typeof w.entries[type].avgDailySold === 'number' && w.entryDate);
   if (past.length === 0) return null;
 
   const targetDow = targetDateStr ? dayOfWeekFromDateStr(targetDateStr) : null;
   if (targetDow !== null) {
-    const sameDow = past.filter(w => dayOfWeekFromDateStr(w.weekEnding) === targetDow);
+    const sameDow = past.filter(w => dayOfWeekFromDateStr(w.entryDate) === targetDow);
     if (sameDow.length >= 3) {
       const recent = sameDow.slice(-8); // last 8 same-weekday entries
       const sum = recent.reduce((s, w) => s + w.entries[type].avgDailySold, 0);
@@ -878,9 +878,9 @@ function renderTable() {
 }
 
 leadTimeInput.addEventListener('input', recomputeAll);
-weekEndingInput.addEventListener('change', async () => {
+entryDateInput.addEventListener('change', async () => {
   if (currentCategory && currentMode() === 'par') {
-    await loadForecast(currentCategory, weekEndingInput.value);
+    await loadForecast(currentCategory, entryDateInput.value);
     renderModelAccuracyText();
   }
   recomputeAll();
@@ -902,7 +902,7 @@ function recomputeAll() {
       // backend down) so the tool still works. Either way, blend in the just-uploaded
       // file's rate — the backend can't see data that hasn't been saved yet.
       const cachedEstimate = forecastCache[type] && forecastCache[type].estimate;
-      const histRate = typeof cachedEstimate === 'number' ? cachedEstimate : avgDailySoldFromHistory(type, weekEndingInput.value);
+      const histRate = typeof cachedEstimate === 'number' ? cachedEstimate : avgDailySoldFromHistory(type, entryDateInput.value);
       const avgDaily = histRate !== null ? (histRate * 0.7 + fileRate * 0.3) : fileRate;
 
       tr.querySelector('[data-role="avgDailySold"]').textContent = avgDaily.toFixed(1);
@@ -956,11 +956,11 @@ async function fetchHistoryForCategory(category) {
   }
 }
 
-async function saveWeekToServer(category, weekEnding, entries) {
+async function saveWeekToServer(category, entryDate, entries) {
   const res = await fetch(`${API_BASE_URL}/api/history`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ category, weekEnding, entries }),
+    body: JSON.stringify({ category, entryDate, entries }),
   });
   if (!res.ok) throw new Error(`Server returned ${res.status}`);
   return res.json();
@@ -1024,7 +1024,7 @@ function renderHistory() {
     weeks.slice().reverse().forEach(week => {
       Object.entries(week.entries).forEach(([type, e]) => {
         html += `<tr>
-          <td>${week.weekEnding}</td><td>${type}</td><td>${e.vendor || '—'}</td>
+          <td>${week.entryDate}</td><td>${type}</td><td>${e.vendor || '—'}</td>
           <td>${(e.onHand === null || e.onHand === undefined) ? '—' : e.onHand}</td><td>${e.soldInFile}</td><td>${e.damaged || 0}</td><td>${(e.avgDailySold || 0).toFixed(1)}</td>
         </tr>`;
       });
@@ -1037,7 +1037,7 @@ function renderHistory() {
     weeks.slice().reverse().forEach(week => {
       Object.entries(week.entries).forEach(([type, e]) => {
         html += `<tr>
-          <td>${week.weekEnding}</td><td>${type}</td><td>${e.vendor || '—'}</td><td>${numOrDash(e.ordered)}</td>
+          <td>${week.entryDate}</td><td>${type}</td><td>${e.vendor || '—'}</td><td>${numOrDash(e.ordered)}</td>
           <td>${numOrDash(e.sold)}</td><td>${numOrDash(e.endingCount)}</td><td>${numOrDash(e.gap)}</td><td>${numOrDash(e.totalUsed)}</td>
         </tr>`;
       });
@@ -1048,7 +1048,7 @@ function renderHistory() {
 }
 
 document.getElementById('saveWeekBtn').addEventListener('click', async () => {
-  const weekEnding = weekEndingInput.value || todayISO();
+  const entryDate = entryDateInput.value || todayISO();
   const entries = {};
   const mode = currentMode();
 
@@ -1078,10 +1078,10 @@ document.getElementById('saveWeekBtn').addEventListener('click', async () => {
   });
 
   try {
-    await saveWeekToServer(currentCategory, weekEnding, entries);
+    await saveWeekToServer(currentCategory, entryDate, entries);
     // refresh local cache from server so carry-forward / rolling averages stay correct
     await fetchHistoryForCategory(currentCategory);
-    showToast(`Saved ${currentCategory} — ${weekEnding}`);
+    showToast(`Saved ${currentCategory} — ${entryDate}`);
     renderHistory();
     renderTable();
   } catch (e) {

@@ -2,8 +2,13 @@
 One-time migration: read an existing local SQLite data.db and POST every
 saved week to a Postgres-backed deployment of this API, via the existing
 /api/history endpoint. Safe to re-run — that endpoint upserts on
-(category, week_ending), so posting the same week twice just overwrites it
+(category, entryDate), so posting the same week twice just overwrites it
 with itself.
+
+Note: an old local data.db predates the entry_date rename (see
+docs/decisions/0009-rename-week-ending.md) and still has its column named
+week_ending — that's read as-is below and translated to the current
+entryDate API field on the way out.
 
 Usage:
     python scripts/migrate_sqlite_to_postgres.py path/to/data.db \
@@ -35,7 +40,7 @@ def read_local_weeks(db_path: str) -> list:
     finally:
         conn.close()
     return [
-        {"category": r[0], "weekEnding": r[1], "entries": json.loads(r[2])}
+        {"category": r[0], "entryDate": r[1], "entries": json.loads(r[2])}
         for r in rows
     ]
 
@@ -60,7 +65,7 @@ def main():
     failed = 0
     for week in weeks:
         if args.dry_run:
-            print(f"[dry-run] {week['category']} / {week['weekEnding']}: {len(week['entries'])} item(s)")
+            print(f"[dry-run] {week['category']} / {week['entryDate']}: {len(week['entries'])} item(s)")
             continue
         try:
             resp = requests.post(f"{args.api}/api/history", json=week, timeout=15)
@@ -68,10 +73,10 @@ def main():
                 posted += 1
             else:
                 failed += 1
-                print(f"Failed for {week['category']} / {week['weekEnding']}: {resp.status_code} {resp.text}")
+                print(f"Failed for {week['category']} / {week['entryDate']}: {resp.status_code} {resp.text}")
         except requests.RequestException as e:
             failed += 1
-            print(f"Request error for {week['category']} / {week['weekEnding']}: {e}")
+            print(f"Request error for {week['category']} / {week['entryDate']}: {e}")
         time.sleep(0.05)  # be gentle with a free-tier backend
 
     if args.dry_run:

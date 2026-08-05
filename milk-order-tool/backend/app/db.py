@@ -8,6 +8,12 @@ local SQLite file for local dev and tests when DATABASE_URL isn't set.
 `entries` stays a JSON *string* column rather than Postgres-native JSONB, so
 the exact same schema and queries work unchanged against both backends —
 nothing queries inside the JSON today. See docs/decisions/0002-postgres-migration.md.
+
+The `entry_date` column holds a single calendar date — despite the table's
+name, most rows are NOT weekly: daily par-mode entries and backfilled
+reconciliation-mode entries are both single days. It was originally named
+`week_ending`, which read as misleadingly "always weekly" once backfilled
+daily data landed alongside it — see docs/decisions/0009-rename-week-ending.md.
 """
 
 import json
@@ -35,9 +41,9 @@ weeks_table = Table(
     metadata,
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("category", String, nullable=False),
-    Column("week_ending", String, nullable=False),
+    Column("entry_date", String, nullable=False),
     Column("entries", Text, nullable=False),
-    UniqueConstraint("category", "week_ending", name="uq_category_week_ending"),
+    UniqueConstraint("category", "entry_date", name="uq_category_entry_date"),
 )
 
 
@@ -77,38 +83,38 @@ def fetch_categories(engine) -> list:
 
 
 def fetch_history(engine, category: str) -> list:
-    """All saved weeks for a category, oldest first."""
+    """All saved entries for a category, oldest first."""
     with engine.connect() as conn:
         rows = conn.execute(
-            select(weeks_table.c.week_ending, weeks_table.c.entries)
+            select(weeks_table.c.entry_date, weeks_table.c.entries)
             .where(weeks_table.c.category == category)
-            .order_by(weeks_table.c.week_ending)
+            .order_by(weeks_table.c.entry_date)
         )
-        return [{"weekEnding": r[0], "entries": json.loads(r[1])} for r in rows]
+        return [{"entryDate": r[0], "entries": json.loads(r[1])} for r in rows]
 
 
-def upsert_week(engine, category: str, week_ending: str, entries: dict) -> None:
-    """Save or overwrite the entry for a given category + week."""
+def upsert_week(engine, category: str, entry_date: str, entries: dict) -> None:
+    """Save or overwrite the entry for a given category + date."""
     entries_json = json.dumps(entries)
     insert = pg_insert if engine.dialect.name == "postgresql" else sqlite_insert
     with engine.begin() as conn:
         stmt = insert(weeks_table).values(
-            category=category, week_ending=week_ending, entries=entries_json
+            category=category, entry_date=entry_date, entries=entries_json
         )
         stmt = stmt.on_conflict_do_update(
-            index_elements=["category", "week_ending"],
+            index_elements=["category", "entry_date"],
             set_={"entries": stmt.excluded.entries},
         )
         conn.execute(stmt)
 
 
-def delete_week(engine, category: str, week_ending: str) -> int:
-    """Remove a saved week. Returns the number of rows deleted (0 or 1)."""
+def delete_week(engine, category: str, entry_date: str) -> int:
+    """Remove a saved entry. Returns the number of rows deleted (0 or 1)."""
     with engine.begin() as conn:
         result = conn.execute(
             sa_delete(weeks_table).where(
                 weeks_table.c.category == category,
-                weeks_table.c.week_ending == week_ending,
+                weeks_table.c.entry_date == entry_date,
             )
         )
         return result.rowcount

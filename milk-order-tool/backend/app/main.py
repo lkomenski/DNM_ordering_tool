@@ -41,7 +41,7 @@ app.add_middleware(
 
 class WeekEntry(BaseModel):
     category: str
-    weekEnding: str  # YYYY-MM-DD
+    entryDate: str  # YYYY-MM-DD — a single day for daily entries, or the date of a physical count for a real weekly reconciliation entry
     entries: dict     # { itemLabel: {beginning, ordered, sold, endingCount, gap, totalUsed} }
 
 
@@ -66,9 +66,9 @@ def get_history(category: str):
 
 @app.post("/api/history")
 def save_week(week: WeekEntry):
-    """Save or overwrite the entry for a given category + week."""
-    db.upsert_week(db.get_engine(), week.category, week.weekEnding, week.entries)
-    return {"status": "saved", "category": week.category, "weekEnding": week.weekEnding}
+    """Save or overwrite the entry for a given category + date."""
+    db.upsert_week(db.get_engine(), week.category, week.entryDate, week.entries)
+    return {"status": "saved", "category": week.category, "entryDate": week.entryDate}
 
 
 @app.get("/api/forecast")
@@ -98,9 +98,9 @@ def get_dashboard(category: str, item: Optional[str] = None):
 
 
 @app.delete("/api/history")
-def delete_week(category: str, weekEnding: str):
-    """Remove a saved week, in case of a data-entry mistake."""
-    rowcount = db.delete_week(db.get_engine(), category, weekEnding)
+def delete_week(category: str, entryDate: str):
+    """Remove a saved entry, in case of a data-entry mistake."""
+    rowcount = db.delete_week(db.get_engine(), category, entryDate)
     if rowcount == 0:
-        raise HTTPException(status_code=404, detail="No matching week found")
+        raise HTTPException(status_code=404, detail="No matching entry found")
     return {"status": "deleted"}

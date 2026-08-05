@@ -3,18 +3,18 @@ from app import dashboard
 
 def par_weeks():
     return [
-        {"weekEnding": "2026-08-01", "entries": {"Croissant": {"avgDailySold": 10.0}, "Bagel": {"avgDailySold": 4.0}}},  # Saturday
-        {"weekEnding": "2026-08-02", "entries": {"Croissant": {"avgDailySold": 3.0}}},  # Sunday
-        {"weekEnding": "2026-08-08", "entries": {"Croissant": {"avgDailySold": 12.0}}},  # Saturday
-        {"weekEnding": "2026-02-07", "entries": {"Croissant": {"avgDailySold": 6.0}}},  # Saturday, different month
+        {"entryDate": "2026-08-01", "entries": {"Croissant": {"avgDailySold": 10.0}, "Bagel": {"avgDailySold": 4.0}}},  # Saturday
+        {"entryDate": "2026-08-02", "entries": {"Croissant": {"avgDailySold": 3.0}}},  # Sunday
+        {"entryDate": "2026-08-08", "entries": {"Croissant": {"avgDailySold": 12.0}}},  # Saturday
+        {"entryDate": "2026-02-07", "entries": {"Croissant": {"avgDailySold": 6.0}}},  # Saturday, different month
     ]
 
 
 def reconciliation_weeks():
     return [
-        {"weekEnding": "2026-08-01", "entries": {"Whole Milk": {"totalUsed": 20.0}}},
-        {"weekEnding": "2026-08-08", "entries": {"Whole Milk": {"totalUsed": 24.0}}},
-        {"weekEnding": "2026-02-01", "entries": {"Whole Milk": {"totalUsed": 18.0}}},
+        {"entryDate": "2026-08-01", "entries": {"Whole Milk": {"totalUsed": 20.0}}},
+        {"entryDate": "2026-08-08", "entries": {"Whole Milk": {"totalUsed": 24.0}}},
+        {"entryDate": "2026-02-01", "entries": {"Whole Milk": {"totalUsed": 18.0}}},
     ]
 
 
@@ -70,8 +70,8 @@ def test_reconciliation_dashboard_sold_pattern_ignores_real_weeks():
 def test_reconciliation_dashboard_sold_pattern_uses_backfilled_days_only():
     weeks = reconciliation_weeks() + [
         # Backfilled days: only `sold`, no totalUsed at all.
-        {"weekEnding": "2026-08-03", "entries": {"Whole Milk": {"vendor": "Smith Brothers Farms", "sold": 9.0}}},  # Monday
-        {"weekEnding": "2026-08-10", "entries": {"Whole Milk": {"vendor": "Smith Brothers Farms", "sold": 11.0}}},  # Monday
+        {"entryDate": "2026-08-03", "entries": {"Whole Milk": {"vendor": "Smith Brothers Farms", "sold": 9.0}}},  # Monday
+        {"entryDate": "2026-08-10", "entries": {"Whole Milk": {"vendor": "Smith Brothers Farms", "sold": 11.0}}},  # Monday
     ]
     result = dashboard.reconciliation_dashboard(weeks)
     # the real weekly totalUsed rollup is untouched by the backfilled days
@@ -84,7 +84,7 @@ def test_reconciliation_dashboard_sold_pattern_uses_backfilled_days_only():
 
 def test_reconciliation_dashboard_sold_pattern_item_filter():
     weeks = [
-        {"weekEnding": "2026-08-03", "entries": {
+        {"entryDate": "2026-08-03", "entries": {
             "Whole Milk": {"sold": 9.0},
             "2% Milk": {"sold": 4.0},
         }},

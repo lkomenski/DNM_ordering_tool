@@ -23,7 +23,7 @@ def test_upsert_then_fetch():
     engine = make_engine()
     db.upsert_week(engine, "Milk", "2026-08-01", {"Whole Milk": {"sold": 10}})
     history = db.fetch_history(engine, "Milk")
-    assert history == [{"weekEnding": "2026-08-01", "entries": {"Whole Milk": {"sold": 10}}}]
+    assert history == [{"entryDate": "2026-08-01", "entries": {"Whole Milk": {"sold": 10}}}]
 
 
 def test_upsert_overwrites_same_category_and_week():
@@ -40,7 +40,7 @@ def test_history_ordered_oldest_first():
     db.upsert_week(engine, "Milk", "2026-08-08", {})
     db.upsert_week(engine, "Milk", "2026-08-01", {})
     history = db.fetch_history(engine, "Milk")
-    assert [w["weekEnding"] for w in history] == ["2026-08-01", "2026-08-08"]
+    assert [w["entryDate"] for w in history] == ["2026-08-01", "2026-08-08"]
 
 
 def test_history_scoped_to_category():

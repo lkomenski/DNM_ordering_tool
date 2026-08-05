@@ -260,7 +260,7 @@ def main():
             if is_reconciliation:
                 posted_reconciliation.add(class_name)
 
-            payload = {"category": class_name, "weekEnding": date_iso, "entries": entries}
+            payload = {"category": class_name, "entryDate": date_iso, "entries": entries}
 
             if args.dry_run:
                 print(f"[dry-run] {class_name} / {date_iso}: {len(entries)} item(s), e.g. {list(entries.items())[:1]}")

@@ -40,7 +40,7 @@ def _extract_records(weeks, value_field, item_filter=None):
     totalUsed for reconciliation), optionally restricted to one item."""
     records = []
     for week in weeks:
-        date_str = week.get("weekEnding")
+        date_str = week.get("entryDate")
         if not date_str:
             continue
         try:
@@ -64,7 +64,7 @@ def _daily_records(weeks, item_filter=None):
     charts and the model always agree on which rows count."""
     records = []
     for week in weeks:
-        date_str = week.get("weekEnding")
+        date_str = week.get("entryDate")
         if not date_str:
             continue
         try:

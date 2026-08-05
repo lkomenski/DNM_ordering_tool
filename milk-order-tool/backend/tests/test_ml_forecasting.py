@@ -10,7 +10,7 @@ def make_weeks(start, n_days, rate_fn, item="Croissant"):
     for i in range(n_days):
         d = start + datetime.timedelta(days=i)
         weeks.append({
-            "weekEnding": d.isoformat(),
+            "entryDate": d.isoformat(),
             "entries": {item: {"avgDailySold": rate_fn(d)}},
         })
     return weeks
@@ -23,9 +23,9 @@ def saturday_heavy_rate(d):
 
 def test_build_training_frame_extracts_numeric_rates_only():
     weeks = [
-        {"weekEnding": "2026-08-01", "entries": {"A": {"avgDailySold": 5}, "B": {"totalUsed": 10}}},
-        {"weekEnding": "2026-08-02", "entries": {"A": {"avgDailySold": None}}},
-        {"weekEnding": "not-a-date", "entries": {"A": {"avgDailySold": 5}}},
+        {"entryDate": "2026-08-01", "entries": {"A": {"avgDailySold": 5}, "B": {"totalUsed": 10}}},
+        {"entryDate": "2026-08-02", "entries": {"A": {"avgDailySold": None}}},
+        {"entryDate": "not-a-date", "entries": {"A": {"avgDailySold": 5}}},
     ]
     df = mf.build_training_frame(weeks)
     assert len(df) == 1
@@ -127,7 +127,7 @@ def test_forecast_differentiates_between_items_with_different_patterns():
     for i in range(140):
         d = start + datetime.timedelta(days=i)
         weeks.append({
-            "weekEnding": d.isoformat(),
+            "entryDate": d.isoformat(),
             "entries": {
                 "Croissant": {"avgDailySold": 20.0 if d.weekday() == 5 else 8.0},  # peaks Saturday
                 "Bagel": {"avgDailySold": 15.0 if d.weekday() == 0 else 5.0},       # peaks Monday
